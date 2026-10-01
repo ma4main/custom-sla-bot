@@ -1,0 +1,12 @@
+# Only inputs used by Dockerfile enter the build context.
+# Keep secrets, dumps, logs, Git history and local tools outside the build.
+**
+!Dockerfile
+!requirements.txt
+!alembic.ini
+!app/
+!app/**
+!alembic/
+!alembic/**
+**/__pycache__/
+**/*.py[cod]

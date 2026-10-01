@@ -1,0 +1,91 @@
+# Проверки на каждый пуш и pull request. CI поднимает свой PostgreSQL,
+# поэтому тесты с базой идут на настоящей схеме и не касаются боевых данных.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: chatstats_test
+        options: >-
+          --health-cmd "pg_isready -U test -d chatstats_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/chatstats_test
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/chatstats_test
+      BOT_TOKEN: "1:test"
+      TZ: Europe/Moscow
+      # Смоук-скрипты запускаются файлом, а не модулем: python кладёт в sys.path
+      # каталог скрипта, а не корень репозитория, и `import app` не находится.
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -r requirements-dev.txt
+
+      - name: Синтаксис всего дерева
+        # Дешёвая страховка от файла, который не импортируется ни одним
+        # тестом: битый синтаксис в нём всплыл бы только на проде.
+        run: python -m compileall -q app scripts tests alembic
+
+      - name: Состав тестов
+        # Печать числа собранных тестов по файлам — чтобы сверять с сервером.
+        run: python -m pytest --collect-only -q | tail -30
+
+      - name: Тесты
+        run: python -m pytest
+
+      - name: Миграции накатываются на чистую базу
+        # Схема из моделей и схема из миграций обязаны совпадать: расхождение
+        # обнаруживается на деплое, когда откатываться уже дорого.
+        #
+        # Отдельная база, а не та, что у тестов: тесты создают схему из моделей
+        # (Base.metadata.create_all), и первый же CREATE TYPE упал бы
+        # с «type already exists».
+        env:
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/chatstats_migrations
+        run: |
+          PGPASSWORD=test createdb -h localhost -U test chatstats_migrations
+          alembic upgrade head
+          alembic check
+
+      - name: Неопределённые имена (Ruff F821/F823)
+        # compileall не видит NameError в теле функции, а обходчик экранов
+        # не жмёт мутирующие кнопки; Ruff ловит такие имена статически.
+        run: |
+          pip install --quiet ruff
+          ruff check --select F821,F823 app scripts tests
+
+      - name: Смоук (кнопки, роли, заслон на запись в группы)
+        run: python scripts/verify_bot.py
+
+      - name: Смоук (бот молчит в группах, доступ к отчётам, экраны живы)
+        # Те же проверки, что гоняет deploy.sh перед выкатом.
+        run: |
+          python scripts/verify_no_group_reply.py
+          python scripts/verify_reports_access.py
+          python scripts/verify_screens.py

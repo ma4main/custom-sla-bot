@@ -1,0 +1,118 @@
+# Три сервиса из одного образа плюс база.
+#
+# bot и worker разделены намеренно: если ИИ-провайдер затормозит или упадёт,
+# long polling обязан продолжать работать. Иначе Telegram копит апдейты,
+# и при переполнении очереди события теряются безвозвратно.
+
+# Имя проекта задано явно, чтобы не зависеть от имени каталога: от него
+# зависят имена контейнеров, сети и тома с базой (chat-sla-bot_pgdata).
+# ⚠️ Установка, уже работавшая под другим именем проекта (по имени каталога),
+# при смене имени получит НОВЫЙ пустой том базы. Для неё до первого
+# `docker compose up` пропишите в .env прежнее имя, например
+# COMPOSE_PROJECT_NAME=<старое имя каталога>: переменная сильнее этой строки.
+name: chat-sla-bot
+
+# Общие настройки для всех наших сервисов: ограниченные привилегии и ротация
+# логов (без ротации json-логи однажды забивают диск).
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  # Потолки ресурсов: утёкшая память воркера или тяжёлый отчёт не должны
+  # вытеснить базу. Пиковое потребление бота и воркера — десятки мегабайт.
+  mem_limit: 512m
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      # Данные живут в volume, а не в контейнере: контейнер можно снести
+      # и пересоздать сколько угодно раз, база останется.
+      - pgdata:/var/lib/postgresql/data
+      # Каталог для дампов: pg_dump пишет через stdout, но восстановление
+      # и разовые выгрузки удобнее делать из смонтированной папки.
+      - ./backups:/backups
+    # Порт на хост НЕ публикуется: на общем сервере 5432 может быть занят.
+    # bot/worker/migrate используют postgres:5432 в сети этого compose-проекта;
+    # обслуживание и бэкапы — через docker compose exec -T postgres.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    <<: *hardening
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: alembic upgrade head
+    restart: "no"
+
+  # bot и worker получают .env.app — тот же .env БЕЗ DATABASE_URL владельца
+  # схемы и пароля postgres: приложение ходит в базу ролью botapp
+  # (APP_DATABASE_URL), и учётные данные владельца процессу с внешними
+  # входами (Telegram, провайдер ИИ) не нужны. .env.app собирается из .env:
+  # deploy.sh делает это при обновлении, при установке из архива — команда
+  # из docs/SETUP.md; миграции остаются на .env.
+  # bot и worker стартуют только после успешного migrate: код рассчитан
+  # на актуальную схему базы.
+  bot:
+    build: .
+    <<: *hardening
+    restart: unless-stopped
+    env_file: .env.app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: python -m app.bot.main
+    # Зависший polling внешне неотличим от работающего: процесс жив, а апдейты
+    # не идут. Проверка смотрит на отметку, которую бот обновляет сам.
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.health", "bot"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    build: .
+    <<: *hardening
+    restart: unless-stopped
+    env_file: .env.app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: python -m app.worker.main
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.health", "worker"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  pgdata:

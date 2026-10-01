@@ -1,0 +1,17 @@
+# Скрипты и код едут на Linux-сервер: перевод строки только LF.
+# Иначе bash на сервере падает на возврате каретки (cron молча не делает бэкапы).
+*.sh text eol=lf
+*.py text eol=lf
+*.ini text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.env.example text eol=lf
+.gitignore text eol=lf
+.dockerignore text eol=lf
+Dockerfile text eol=lf
+*.sql text eol=lf
+*.mako text eol=lf
+*.example text eol=lf
+.gitattributes text eol=lf

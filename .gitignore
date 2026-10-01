@@ -1,0 +1,35 @@
+# Секреты
+.env
+.env.app
+.env.bak-*
+.env.app.bak-*
+.env.tmp
+.env.app.tmp
+logs/
+env.txt
+*.dump
+*.sql
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Служебное
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Дампы базы: содержат клиентские переписки, в репозиторий не попадают
+backups/
+
+# Штамп сборки: пишет scripts/deploy.sh, меняется каждым деплоем
+app/BUILD_INFO
+
+# Роль приложения для базы — это скрипт, а не дамп
+!scripts/db_app_role.sql
+
+# Черновики и генерируемые файлы: в репозиторий не попадают
+tmp/
